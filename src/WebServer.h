@@ -1,236 +1,211 @@
-/*
-  WebServer.h - Dead simple web-server.
-  Supports only one simultaneous client, knows how to handle GET and POST.
+/**************************************************************
+   WiFiManager is a library for the ESP8266/Arduino platform
+   (https://github.com/esp8266/Arduino) to enable easy
+   configuration and reconfiguration of WiFi credentials using a Captive Portal
+   inspired by:
+   http://www.esp8266.com/viewtopic.php?f=29&t=2520
+   https://github.com/chriscook8/esp-arduino-apboot
+   https://github.com/esp8266/Arduino/tree/master/libraries/DNSServer/examples/CaptivePortalAdvanced
+   Built by AlexT https://github.com/tzapu
+   Licensed under MIT license
+ **************************************************************/
 
-  Copyright (c) 2014 Ivan Grokhotkov. All rights reserved.
+#ifndef WiFiManager_h
+#define WiFiManager_h
 
-  This library is free software; you can redistribute it and/or
-  modify it under the terms of the GNU Lesser General Public
-  License as published by the Free Software Foundation; either
-  version 2.1 of the License, or (at your option) any later version.
-
-  This library is distributed in the hope that it will be useful,
-  but WITHOUT ANY WARRANTY; without even the implied warranty of
-  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-  Lesser General Public License for more details.
-
-  You should have received a copy of the GNU Lesser General Public
-  License along with this library; if not, write to the Free Software
-  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
-  Modified 8 May 2015 by Hristo Gochkov (proper post and file upload handling)
-*/
-
-
-#ifndef WEBSERVER_H
-#define WEBSERVER_H
-
-#include <functional>
-#ifdef ESP8266
-#define WebServer ESP8266WebServer
+#if defined(ESP8266)
 #include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
 #else
 #include <WiFi.h>
-#define write_P   write
+#include <WebServer.h>
 #endif
+#include <DNSServer.h>
+#include <memory>
 
-enum HTTPMethod { HTTP_ANY, HTTP_GET, HTTP_POST, HTTP_PUT, HTTP_PATCH, HTTP_DELETE, HTTP_OPTIONS };
-enum HTTPUploadStatus { UPLOAD_FILE_START, UPLOAD_FILE_WRITE, UPLOAD_FILE_END,
-                        UPLOAD_FILE_ABORTED };
-enum HTTPClientStatus { HC_NONE, HC_WAIT_READ, HC_WAIT_CLOSE };
-
-#define HTTP_DOWNLOAD_UNIT_SIZE 1460
-
-#ifndef HTTP_UPLOAD_BUFLEN
-#define HTTP_UPLOAD_BUFLEN 2048
-#endif
-
-#define HTTP_MAX_DATA_WAIT 1000 //ms to wait for the client to send the request
-#define HTTP_MAX_POST_WAIT 1000 //ms to wait for POST data to arrive
-#define HTTP_MAX_SEND_WAIT 5000 //ms to wait for data chunk to be ACKed
-#define HTTP_MAX_CLOSE_WAIT 2000 //ms to wait for the client to close the connection
-
-#define CONTENT_LENGTH_UNKNOWN ((size_t) -1)
-#define CONTENT_LENGTH_NOT_SET ((size_t) -2)
-
-class WebServer;
-
-typedef struct {
-  HTTPUploadStatus status;
-  String  filename;
-  String  name;
-  String  type;
-  size_t  totalSize;    // file size
-  size_t  currentSize;  // size of data currently in buf
-  uint8_t buf[HTTP_UPLOAD_BUFLEN];
-} HTTPUpload;
-
-#include "detail/RequestHandler.h"
-
-namespace fs {
-class FS;
+#if defined(ESP8266)
+extern "C" {
+  #include "user_interface.h"
 }
-
-class WebServer
-{
-public:
-  WebServer(IPAddress addr, int port = 80);
-  WebServer(int port = 80);
-  ~WebServer();
-
-  void begin();
-  void handleClient();
-
-  void close();
-  void stop();
-
-  bool authenticate(const char * username, const char * password);
-  void requestAuthentication();
-
-  typedef std::function<void(void)> THandlerFunction;
-  void on(const String &uri, THandlerFunction handler);
-  void on(const String &uri, HTTPMethod method, THandlerFunction fn);
-  void on(const String &uri, HTTPMethod method, THandlerFunction fn, THandlerFunction ufn);
-  void addHandler(RequestHandler* handler);
-  void serveStatic(const char* uri, fs::FS& fs, const char* path, const char* cache_header = NULL );
-  void onNotFound(THandlerFunction fn);  //called when handler is not assigned
-  void onFileUpload(THandlerFunction fn); //handle file uploads
-
-  String uri() { return _currentUri; }
-  HTTPMethod method() { return _currentMethod; }
-  WiFiClient client() { return _currentClient; }
-  HTTPUpload& upload() { return _currentUpload; }
-
-  String arg(String name);        // get request argument value by name
-  String arg(int i);              // get request argument value by number
-  String argName(int i);          // get request argument name by number
-  int args();                     // get arguments count
-  bool hasArg(String name);       // check if argument exists
-  void collectHeaders(const char* headerKeys[], const size_t headerKeysCount); // set the request headers to collect
-  String header(String name);      // get request header value by name
-  String header(int i);              // get request header value by number
-  String headerName(int i);          // get request header name by number
-  int headers();                     // get header count
-  bool hasHeader(String name);       // check if header exists
-
-  String hostHeader();            // get request host header if available or empty String if not
-
-  // send response to the client
-  // code - HTTP response code, can be 200 or 404
-  // content_type - HTTP content type, like "text/plain" or "image/png"
-  // content - actual content body
-  void send(int code, const char* content_type = NULL, const String& content = String(""));
-  void send(int code, char* content_type, const String& content);
-  void send(int code, const String& content_type, const String& content);
-  void send_P(int code, PGM_P content_type, PGM_P content);
-  void send_P(int code, PGM_P content_type, PGM_P content, size_t contentLength);
-
-  void setContentLength(size_t contentLength);
-  void sendHeader(const String& name, const String& value, bool first = false);
-  void sendContent(const String& content);
-  void sendContent_P(PGM_P content);
-  void sendContent_P(PGM_P content, size_t size);
-
-  static String urlDecode(const String& text);
-
-#ifdef ESP8266
-template<typename T> size_t streamFile(T &file, const String& contentType){
-  setContentLength(file.size());
-  if (String(file.name()).endsWith(".gz") &&
-      contentType != "application/x-gzip" &&
-      contentType != "application/octet-stream"){
-    sendHeader("Content-Encoding", "gzip");
-  }
-  send(200, contentType, "");
-  return _currentClient.write(file);
-}
+#define ESP_getChipId()   (ESP.getChipId())
 #else
-template<typename T> size_t streamFile(T &file, const String& contentType){
-#define STREAMFILE_BUFSIZE 2*1460
-  setContentLength(file.size());
-  if (String(file.name()).endsWith(".gz") &&
-      contentType != "application/x-gzip" &&
-      contentType != "application/octet-stream") {
-    sendHeader("Content-Encoding", "gzip");
-  }
-  send(200, contentType, "");
-  uint8_t *buf = (uint8_t *)malloc(STREAMFILE_BUFSIZE);
-  if (buf == NULL) {
-    //DBG_OUTPUT_PORT.printf("streamFile malloc failed");
-    return 0;
-  }
-  size_t totalBytesOut = 0;
-  while (client().connected() && (file.available() > 0)) {
-    int bytesOut;
-    int bytesIn = file.read(buf, STREAMFILE_BUFSIZE);
-    if (bytesIn <= 0) break;
-    while (1) {
-      bytesOut = 0;
-      if (!client().connected()) break;
-      bytesOut = client().write(buf, bytesIn);
-      if (bytesIn == bytesOut) break;
-
-      //DBG_OUTPUT_PORT.printf("bytesIn %d != bytesOut %d\r\n",
-      //bytesIn, bytesOut);
-      delay(1);
-    }
-    totalBytesOut += bytesOut;
-    yield();
-  }
-  if (totalBytesOut != file.size()) {
-    //DBG_OUTPUT_PORT.printf("file size %d bytes out %d\r\n",
-    //    file.size(), totalBytesOut);
-  }
-  free(buf);
-  return totalBytesOut;
-}
+#include <esp_wifi.h>
+#define ESP_getChipId()   ((uint32_t)ESP.getEfuseMac())
 #endif
 
-protected:
-  void _addRequestHandler(RequestHandler* handler);
-  void _handleRequest();
-  bool _parseRequest(WiFiClient& client);
-  void _parseArguments(String data);
-  static String _responseCodeToString(int code);
-  bool _parseForm(WiFiClient& client, String boundary, uint32_t len);
-  bool _parseFormUploadAborted();
-  void _uploadWriteByte(uint8_t b);
-  uint8_t _uploadReadByte(WiFiClient& client);
-  void _prepareHeader(String& response, int code, const char* content_type, size_t contentLength);
-  bool _collectHeader(const char* headerName, const char* headerValue);
+const char HTTP_HEAD_s[] PROGMEM            = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1, user-scalable=no\"/><title>{v}</title>";
+const char HTTP_STYLE[] PROGMEM           = "<style>.c{text-align: center;} div,input{padding:5px;font-size:1em;} input{width:95%;} body{text-align: center;font-family:verdana;} button{border:0;border-radius:0.3rem;background-color:#1fa3ec;color:#fff;line-height:2.4rem;font-size:1.2rem;width:100%;} .q{float: right;width: 64px;text-align: right;} .l{background: url(\"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAMAAABEpIrGAAAALVBMVEX///8EBwfBwsLw8PAzNjaCg4NTVVUjJiZDRUUUFxdiZGSho6OSk5Pg4eFydHTCjaf3AAAAZElEQVQ4je2NSw7AIAhEBamKn97/uMXEGBvozkWb9C2Zx4xzWykBhFAeYp9gkLyZE0zIMno9n4g19hmdY39scwqVkOXaxph0ZCXQcqxSpgQpONa59wkRDOL93eAXvimwlbPbwwVAegLS1HGfZAAAAABJRU5ErkJggg==\") no-repeat left center;background-size: 1em;}</style>";
+const char HTTP_SCRIPT[] PROGMEM          = "<script>function c(l){document.getElementById('s').value=l.innerText||l.textContent;document.getElementById('p').focus();}</script>";
+const char HTTP_HEAD_END[] PROGMEM        = "</head><body><div style='text-align:left;display:inline-block;min-width:260px;'>";
+const char HTTP_PORTAL_OPTIONS[] PROGMEM  = "<form action=\"/wifi\" method=\"get\"><button>Configure WiFi</button></form><br/><form action=\"/0wifi\" method=\"get\"><button>Configure WiFi (No Scan)</button></form><br/>";
+//<form action=\"/i\" method=\"get\"><button>Info</button></form><br/><form action=\"/r\" method=\"post\"><button>Reset</button></form>";
+const char HTTP_ITEM[] PROGMEM            = "<div><a href='#p' onclick='c(this)'>{v}</a>&nbsp;<span class='q {i}'>{r}%</span></div>";
+const char HTTP_FORM_START[] PROGMEM      = "<form method='get' action='wifisave'><input id='s' name='s' length=32 placeholder='SSID'><br/><input id='p' name='p' length=64 type='password' placeholder='password'><br/>";
+const char HTTP_FORM_PARAM[] PROGMEM      = "<br/><input id='{i}' name='{n}' length={l} placeholder='{p}' value='{v}' {c}>";
+const char HTTP_FORM_END[] PROGMEM        = "<br/><button type='submit'>save</button></form>";
+const char HTTP_SCAN_LINK[] PROGMEM       = "<br/><div class=\"c\"><a href=\"/wifi\">Scan</a></div>";
+const char HTTP_SAVED[] PROGMEM           = "<div>Credentials Saved<br />Trying to connect Weread to network.<br />If it fails reconnect to AP to try again</div>";
+const char HTTP_END[] PROGMEM             = "</div></body></html>";
 
-  struct RequestArgument {
-    String key;
-    String value;
-  };
+#define WIFI_MANAGER_MAX_PARAMS 10
 
-  WiFiServer  _server;
+class WiFiManagerParameter {
+  public:
+    WiFiManagerParameter(const char *custom);
+    WiFiManagerParameter(const char *id, const char *placeholder, const char *defaultValue, int length);
+    WiFiManagerParameter(const char *id, const char *placeholder, const char *defaultValue, int length, const char *custom);
 
-  WiFiClient  _currentClient;
-  HTTPMethod  _currentMethod;
-  String      _currentUri;
-  uint8_t     _currentVersion;
-  HTTPClientStatus _currentStatus;
-  unsigned long _statusChange;
+    const char *getID();
+    const char *getValue();
+    const char *getPlaceholder();
+    int         getValueLength();
+    const char *getCustomHTML();
+  private:
+    const char *_id;
+    const char *_placeholder;
+    char       *_value;
+    int         _length;
+    const char *_customHTML;
 
-  RequestHandler*  _currentHandler;
-  RequestHandler*  _firstHandler;
-  RequestHandler*  _lastHandler;
-  THandlerFunction _notFoundHandler;
-  THandlerFunction _fileUploadHandler;
+    void init(const char *id, const char *placeholder, const char *defaultValue, int length, const char *custom);
 
-  int              _currentArgCount;
-  RequestArgument* _currentArgs;
-  HTTPUpload       _currentUpload;
-
-  int              _headerKeysCount;
-  RequestArgument* _currentHeaders;
-  size_t           _contentLength;
-  String           _responseHeaders;
-
-  String           _hostHeader;
-  bool             _chunked;
-
+    friend class WiFiManager;
 };
 
 
-#endif //WEBSERVER_H
+class WiFiManager
+{
+  public:
+    WiFiManager();
+
+    boolean       autoConnect();
+    boolean       autoConnect(char const *apName, char const *apPassword = NULL);
+
+    //if you want to always start the config portal, without trying to connect first
+    boolean       startConfigPortal();
+    boolean       startConfigPortal(char const *apName, char const *apPassword = NULL);
+
+    // get the AP name of the config portal, so it can be used in the callback
+    String        getConfigPortalSSID();
+    String        getSSID();
+    String        getPassword();
+    void          resetSettings();
+
+    //sets timeout before webserver loop ends and exits even if there has been no setup.
+    //useful for devices that failed to connect at some point and got stuck in a webserver loop
+    //in seconds setConfigPortalTimeout is a new name for setTimeout
+    void          setConfigPortalTimeout(unsigned long seconds);
+    void          setTimeout(unsigned long seconds);
+
+    //sets timeout for which to attempt connecting, useful if you get a lot of failed connects
+    void          setConnectTimeout(unsigned long seconds);
+
+
+    void          setDebugOutput(boolean debug);
+    //defaults to not showing anything under 8% signal quality if called
+    void          setMinimumSignalQuality(int quality = 8);
+    //sets a custom ip /gateway /subnet configuration
+    void          setAPStaticIPConfig(IPAddress ip, IPAddress gw, IPAddress sn);
+    //sets config for a static IP
+    void          setSTAStaticIPConfig(IPAddress ip, IPAddress gw, IPAddress sn);
+    //called when AP mode and config portal is started
+    void          setAPCallback( void (*func)(WiFiManager*) );
+    //called when settings have been changed and connection was successful
+    void          setSaveConfigCallback( void (*func)(void) );
+    //adds a custom parameter
+    void          addParameter(WiFiManagerParameter *p);
+    //if this is set, it will exit after config, even if connection is unsuccessful.
+    void          setBreakAfterConfig(boolean shouldBreak);
+    //if this is set, try WPS setup when starting (this will delay config portal for up to 2 mins)
+    //TODO
+    //if this is set, customise style
+    void          setCustomHeadElement(const char* element);
+    //if this is true, remove duplicated Access Points - defaut true
+    void          setRemoveDuplicateAPs(boolean removeDuplicates);
+
+  private:
+    std::unique_ptr<DNSServer>        dnsServer;
+#ifdef ESP8266
+    std::unique_ptr<ESP8266WebServer> server;
+#else
+    std::unique_ptr<WebServer>        server;
+#endif
+
+    //const int     WM_DONE                 = 0;
+    //const int     WM_WAIT                 = 10;
+
+    //const String  HTTP_HEAD = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/><title>{v}</title>";
+
+    void          setupConfigPortal();
+    void          startWPS();
+
+    const char*   _apName                 = "no-net";
+    const char*   _apPassword             = NULL;
+    String        _ssid                   = "";
+    String        _pass                   = "";
+    unsigned long _configPortalTimeout    = 0;
+    unsigned long _connectTimeout         = 0;
+    unsigned long _configPortalStart      = 0;
+
+    IPAddress     _ap_static_ip;
+    IPAddress     _ap_static_gw;
+    IPAddress     _ap_static_sn;
+    IPAddress     _sta_static_ip;
+    IPAddress     _sta_static_gw;
+    IPAddress     _sta_static_sn;
+
+    int           _paramsCount            = 0;
+    int           _minimumQuality         = -1;
+    boolean       _removeDuplicateAPs     = true;
+    boolean       _shouldBreakAfterConfig = false;
+    boolean       _tryWPS                 = false;
+
+    const char*   _customHeadElement      = "";
+
+    //String        getEEPROMString(int start, int len);
+    //void          setEEPROMString(int start, int len, String string);
+
+    int           status = WL_IDLE_STATUS;
+    int           connectWifi(String ssid, String pass);
+    uint8_t       waitForConnectResult();
+
+    void          handleRoot();
+    void          handleWifi(boolean scan);
+    void          handleWifiSave();
+    void          handleInfo();
+    void          handleReset();
+    void          handleNotFound();
+    void          handle204();
+    boolean       captivePortal();
+    boolean       configPortalHasTimeout();
+
+    // DNS server
+    const byte    DNS_PORT = 53;
+
+    //helpers
+    int           getRSSIasQuality(int RSSI);
+    boolean       isIp(String str);
+    String        toStringIp(IPAddress ip);
+
+    boolean       connect;
+    boolean       _debug = true;
+
+    void (*_apcallback)(WiFiManager*) = NULL;
+    void (*_savecallback)(void) = NULL;
+
+    WiFiManagerParameter* _params[WIFI_MANAGER_MAX_PARAMS];
+
+    template <typename Generic>
+    void          DEBUG_WM(Generic text);
+
+    template <class T>
+    auto optionalIPFromString(T *obj, const char *s) -> decltype(  obj->fromString(s)  ) {
+      return  obj->fromString(s);
+    }
+    auto optionalIPFromString(...) -> bool {
+      DEBUG_WM("NO fromString METHOD ON IPAddress, you need ESP8266 core 2.1.0 or newer for Custom IP configuration to work.");
+      return false;
+    }
+};
+
+#endif
